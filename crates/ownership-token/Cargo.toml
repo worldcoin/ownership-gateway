@@ -17,6 +17,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 test-util = []
 remote-jwks = ["dep:reqwest", "dep:tokio", "dep:tracing", "dep:getrandom"]
+tower = ["dep:axum", "dep:tower"]
 
 [dependencies]
 base64.workspace = true
@@ -30,12 +31,16 @@ reqwest = { workspace = true, optional = true }
 tokio = { version = "1.48", features = ["rt", "sync", "time"], optional = true }
 tracing = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true }
+axum = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
 
 [dev-dependencies]
 ownership-token = { path = ".", features = ["test-util"] }
 tokio = { workspace = true, features = ["test-util"] }
 wiremock.workspace = true
 reqwest.workspace = true
+axum.workspace = true
+tower.workspace = true
 
 [lints]
 workspace = true

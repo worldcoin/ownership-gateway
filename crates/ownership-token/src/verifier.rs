@@ -82,7 +82,7 @@ impl RejectionReason {
 }
 
 /// The result of rejecting an ownership token.
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, thiserror::Error, PartialEq, Eq)]
 pub enum VerifyError {
     /// The token is invalid or untrusted.
     #[error("invalid ownership token")]
