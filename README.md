@@ -43,3 +43,14 @@ cargo test --locked --workspace --all-features
 ```
 
 Integration tests start Redis with testcontainers, so they need a running Docker daemon.
+
+## Images and releases
+
+The proxy image is published to `ghcr.io/worldcoin/ownership-proxy` for amd64.
+Deploy by `sha-<7>` tag or image digest. A tag such as `ownership-proxy/v0.1.0`
+publishes the versioned image and creates a draft GitHub release with its digest.
+Stable version tags and pushes to `main` also update `latest`.
+
+Release-plz prepares and publishes the `ownership-token` crate; `ownership-proxy`
+is not published to crates.io. Crate publishing requires crates.io trusted publishing
+configured for this repository and the release workflow.

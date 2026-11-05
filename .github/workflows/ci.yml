@@ -49,3 +49,13 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # Integration tests start Redis through testcontainers on the runner's Docker daemon.
       - run: cargo test --locked --workspace --all-features
+
+  docker:
+    name: proxy image build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - run: docker build -f crates/ownership-proxy/Dockerfile -t ownership-proxy:ci .
