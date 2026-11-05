@@ -7,6 +7,8 @@ publish = false
 
 [dependencies]
 async-trait.workspace = true
+aws-config.workspace = true
+aws-sdk-kms.workspace = true
 axum.workspace = true
 base64.workspace = true
 chrono.workspace = true
@@ -14,6 +16,7 @@ clap.workspace = true
 eyre.workspace = true
 metrics.workspace = true
 ownership-token = { path = "../ownership-token" }
+p256.workspace = true
 rand.workspace = true
 rayon.workspace = true
 redis.workspace = true
@@ -32,8 +35,9 @@ world-id-proof.workspace = true
 
 [dev-dependencies]
 eddsa-babyjubjub.workspace = true
+ownership-token = { path = "../ownership-token", features = ["test-util"] }
 testcontainers.workspace = true
-testcontainers-modules = { workspace = true, features = ["redis"] }
+testcontainers-modules = { workspace = true, features = ["localstack", "redis"] }
 tokio = { workspace = true, features = ["test-util"] }
 wiremock.workspace = true
 world-id-proof = { workspace = true, features = ["embed-ownership-prover"] }
