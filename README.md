@@ -1,0 +1,25 @@
+# ownership-gateway
+
+Exchanges a World ID ownership proof ([WIP-103](https://github.com/worldcoin/world-id-protocol/blob/main/docs/WIPs/wip-103.md)) for a short-lived, audience-scoped JWT, and verifies that JWT in front of backend services.
+
+A client asks the gateway for a challenge, proves with its authenticator that it controls a registered World ID account, and exchanges the proof for a token. Backends then check the token locally against the gateway's public keys, without receiving the proof on every request.
+
+| Crate | What it is |
+| --- | --- |
+| `ownership-gateway` | Token issuer: challenges, proof verification, KMS signing, and the JWKS endpoint (`ownership-gateway jwks`). |
+| `ownership-token` | Token claims and verification: a JWKS cache, a `tower` layer and an `axum` extractor. Published to crates.io. |
+| `ownership-proxy` | Sidecar that verifies tokens and forwards verified requests to a local service. |
+
+An ownership proof shows control of an authenticator key of a registered account. It does not prove personhood or that one person holds one account.
+
+## Development
+
+Building the gateway needs `nargo` 1.0.0-beta.26; the Nix dev shell provides it and the pinned Rust toolchain (`nix develop`).
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --locked --workspace --all-targets --all-features -- --deny warnings
+cargo test --locked --workspace --all-features
+```
+
+Integration tests start Redis with testcontainers, so they need a running Docker daemon.

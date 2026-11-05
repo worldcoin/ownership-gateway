@@ -1,0 +1,16 @@
+[package]
+name = "ownership-token"
+description = "Claims and verification for World ID ownership tokens issued by ownership-gateway."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+authors.workspace = true
+readme.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
