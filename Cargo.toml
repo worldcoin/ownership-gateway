@@ -18,10 +18,12 @@ axum = "0.8"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
+eddsa-babyjubjub = { package = "taceo-eddsa-babyjubjub", version = "0.6" }
 eyre = "0.6"
 metrics = "0.24"
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 rand = "0.8"
+rayon = "1"
 redis = { version = "1.8.1", default-features = false, features = ["connection-manager", "tokio-comp", "tokio-rustls-comp"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rustls = { version = "0.23", features = ["aws_lc_rs"] }
@@ -35,7 +37,9 @@ thiserror = "2"
 tokio = { version = "1.48", features = ["full"] }
 tracing = "0.1"
 url = { version = "2", features = ["serde"] }
+wiremock = "0.6"
 world-id-primitives = "=0.18.0"
+world-id-proof = { version = "=0.18.0", features = ["embed-ownership-verifier"] }
 
 [workspace.lints.rust]
 missing_docs = "warn"

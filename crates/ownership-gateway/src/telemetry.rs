@@ -8,12 +8,14 @@ use tokio::time::Instant;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Dependency {
     Redis,
+    Root,
 }
 
 impl Dependency {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Redis => "redis",
+            Self::Root => "root",
         }
     }
 }
@@ -22,6 +24,7 @@ impl Dependency {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FailureClass {
     Timeout,
+    Server,
     Connect,
     Other,
 }
@@ -30,6 +33,7 @@ impl FailureClass {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Timeout => "timeout",
+            Self::Server => "5xx",
             Self::Connect => "connect",
             Self::Other => "other",
         }
