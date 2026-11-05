@@ -1,8 +1,16 @@
-//! Metrics and log formatting shared by the gateway's dependency clients.
+//! Request tracing, HTTP and dependency metrics, and log formatting.
 
 use std::{error::Error, fmt};
 
+use axum::{
+    extract::{MatchedPath, Request},
+    middleware::Next,
+    response::Response,
+};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use rand::{RngCore as _, rngs::OsRng};
 use tokio::time::Instant;
+use tracing::Instrument as _;
 
 /// A remote dependency, as named in the `dep` metric tag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,4 +92,45 @@ impl fmt::Display for ErrorChain<'_> {
         }
         Ok(())
     }
+}
+
+/// Runs a request in a span with a random request ID, then records
+/// `http.requests{route,status_class}` and the `http.duration{route}` distribution. `route` is the
+/// matched route template, or `unmatched`.
+pub(crate) async fn observe_request(request: Request, next: Next) -> Response {
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map_or("unmatched", MatchedPath::as_str)
+        .to_owned();
+    let mut request_id = [0_u8; 16];
+    OsRng.fill_bytes(&mut request_id);
+    let span = tracing::info_span!(
+        "request",
+        request_id = %URL_SAFE_NO_PAD.encode(request_id),
+        route = %route
+    );
+    let started = Instant::now();
+    let response = next.run(request).instrument(span).await;
+    let status_class = match response.status().as_u16() {
+        100..=199 => "1xx",
+        200..=299 => "2xx",
+        300..=399 => "3xx",
+        400..=499 => "4xx",
+        _ => "5xx",
+    };
+    metrics::counter!(
+        "ownership_gateway.http.requests",
+        "route" => route.clone(),
+        "status_class" => status_class
+    )
+    .increment(1);
+    // The `histogram` tag makes the DogStatsD exporter send a distribution.
+    metrics::histogram!(
+        "ownership_gateway.http.duration",
+        "route" => route,
+        "histogram" => "distribution"
+    )
+    .record(started.elapsed().as_secs_f64());
+    response
 }

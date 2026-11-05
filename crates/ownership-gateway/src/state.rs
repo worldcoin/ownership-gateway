@@ -22,6 +22,8 @@ pub struct AppState {
     pub request_deadline: Duration,
     /// The token exchange.
     pub exchange: Arc<Exchange>,
+    /// Whether challenges and tokens may be issued. When false, both endpoints answer 503.
+    pub issuance_enabled: bool,
 }
 
 impl FromRef<AppState> for Arc<Policies> {
