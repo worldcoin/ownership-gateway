@@ -11,7 +11,7 @@ use axum::{
 };
 use ownership_token::JwkSet;
 
-use crate::error::ApiError;
+use crate::{error::ApiError, shutdown::Shutdown, telemetry};
 
 /// The key set to publish was empty.
 #[derive(Debug, thiserror::Error)]
@@ -48,10 +48,12 @@ impl JwksState {
 }
 
 /// Returns the public router: `/.well-known/jwks.json`, which answers 503 until keys are
-/// published and then serves them with `Cache-Control: public, max-age=300`.
+/// published and then serves them with `Cache-Control: public, max-age=300`. Requests count
+/// toward the HTTP metrics.
 pub fn router(state: JwksState) -> Router {
     Router::new()
         .route("/.well-known/jwks.json", get(jwks))
+        .layer(axum::middleware::from_fn(telemetry::observe_request))
         .with_state(state)
 }
 
@@ -63,17 +65,17 @@ async fn jwks(State(state): State<JwksState>) -> Response {
     ([(header::CACHE_CONTROL, "public, max-age=300")], Json(keys)).into_response()
 }
 
-/// Returns the probe router: `/health` for liveness and `/ready`, which answers 200 once keys
-/// are published.
-pub fn admin_router(state: JwksState) -> Router {
+/// Returns the probe router: `/health` for liveness, and `/ready`, which answers 200 once keys
+/// are published and until shutdown starts.
+pub fn admin_router(state: JwksState, shutdown: Shutdown) -> Router {
     Router::new()
         .route("/health", get(|| async { StatusCode::OK }))
         .route("/ready", get(ready))
-        .with_state(state)
+        .with_state((state, shutdown))
 }
 
-async fn ready(State(state): State<JwksState>) -> StatusCode {
-    if state.keys().is_some() {
+async fn ready(State((state, shutdown)): State<(JwksState, Shutdown)>) -> StatusCode {
+    if state.keys().is_some() && !shutdown.has_started() {
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE

@@ -42,7 +42,7 @@ pub enum Command {
     Jwks(JwksConfig),
 }
 
-/// The listener addresses, shared by both deployment roles.
+/// The listener addresses and how they drain, shared by both deployment roles.
 #[derive(Debug, clap::Args)]
 pub struct Listeners {
     /// Address for public requests.
@@ -59,6 +59,15 @@ pub struct Listeners {
         default_value = "0.0.0.0:8081"
     )]
     pub admin: SocketAddr,
+    /// How long requests in flight may finish after `SIGTERM`, in seconds. The pod's
+    /// `terminationGracePeriodSeconds` must exceed this plus any `preStop` delay.
+    #[arg(
+        long = "shutdown-grace-secs",
+        env = "OWNERSHIP_GATEWAY_SHUTDOWN_GRACE_SECS",
+        default_value = "45",
+        value_parser = seconds
+    )]
+    pub shutdown_grace: Duration,
 }
 
 /// Configuration of the issuance server.
@@ -143,6 +152,14 @@ pub struct ServeConfig {
         value_parser = clap::value_parser!(u16).map(usize::from)
     )]
     pub verify_queue_depth: usize,
+    /// Whether challenges and tokens may be issued: the global kill switch.
+    #[arg(
+        long,
+        env = "OWNERSHIP_GATEWAY_TOKEN_ISSUANCE_ENABLED",
+        default_value_t = true,
+        action = clap::ArgAction::Set
+    )]
+    pub token_issuance_enabled: bool,
 }
 
 impl ServeConfig {
@@ -450,6 +467,7 @@ mod tests {
         assert_eq!(config.request_deadline, Duration::from_millis(5000));
         assert_eq!(config.root_failure_window, Duration::from_secs(30));
         assert_eq!(config.kms_failure_threshold, DEFAULT_FAILURE_THRESHOLD);
+        assert_eq!(config.listeners.shutdown_grace, Duration::from_secs(45));
         let config = parse_serve(&serve_args(
             "rediss://cache",
             &[
@@ -479,6 +497,18 @@ mod tests {
             let args = serve_args("rediss://cache", &[flag, value]);
             assert!(parse_serve(&args).is_err(), "{flag} {value}");
         }
+    }
+
+    #[test]
+    fn the_issuance_switch_defaults_on_and_can_be_turned_off() {
+        let config = parse_serve(&serve_args("rediss://cache", &[])).unwrap();
+        assert!(config.token_issuance_enabled);
+        let config = parse_serve(&serve_args(
+            "rediss://cache",
+            &["--token-issuance-enabled", "false"],
+        ))
+        .unwrap();
+        assert!(!config.token_issuance_enabled);
     }
 
     #[test]

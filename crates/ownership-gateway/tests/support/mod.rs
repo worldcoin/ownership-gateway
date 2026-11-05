@@ -14,13 +14,17 @@ use async_trait::async_trait;
 use axum::Router;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use eddsa_babyjubjub::EdDSAPrivateKey;
+use metrics::{SharedString, Unit};
+use metrics_util::{CompositeKey, MetricKind, debugging::DebugValue};
 use ownership_gateway::{
     challenge::{Challenge, ChallengeId},
     exchange::Exchange,
     policy::Policies,
+    readiness::{AdminState, admin_router},
     retry::Deadline,
     root::RootValidator,
-    server::{admin_router, router},
+    server::router,
+    shutdown::{self, ShutdownTrigger},
     signing::{DEFAULT_FAILURE_THRESHOLD, KmsClient, KmsFailure, KmsSigner},
     state::AppState,
     store::{Attempt, ChallengeStore, Insertion, RedisStore, StoreError},
@@ -128,6 +132,7 @@ pub(crate) fn app_state(store: Arc<dyn ChallengeStore>, exchange: Exchange) -> A
         challenge_ttl: Duration::from_mins(2),
         request_deadline: Duration::from_secs(5),
         exchange: Arc::new(exchange),
+        issuance_enabled: true,
     }
 }
 
@@ -242,14 +247,19 @@ pub(crate) struct TestGateway {
     pub(crate) public: TestServer,
     pub(crate) admin: TestServer,
     pub(crate) client: reqwest::Client,
+    pub(crate) shutdown: ShutdownTrigger,
 }
 
 impl TestGateway {
     pub(crate) async fn start(state: AppState) -> Self {
+        let (trigger, shutdown) = shutdown::channel();
+        let admin = AdminState::new(shutdown);
+        admin.serve(state.clone());
         Self {
-            public: TestServer::start(router(state.clone())).await,
-            admin: TestServer::start(admin_router(state)).await,
+            public: TestServer::start(router(state)).await,
+            admin: TestServer::start(admin_router(admin)).await,
             client: reqwest::Client::new(),
+            shutdown: trigger,
         }
     }
 
@@ -649,6 +659,10 @@ pub(crate) async fn delete_challenge(stack: &TestStack, request: &Value) {
 pub(crate) enum Fault {
     /// Consumes challenges but reports every consume as timed out, as when the reply is lost.
     LoseConsumeReply,
+    /// Never answers a claim, so a token request runs until the request deadline ends it.
+    HangClaims,
+    /// Never answers an insert, so a challenge request runs until the request deadline ends it.
+    HangInserts,
 }
 
 /// A Redis store that fails in one way.
@@ -666,7 +680,12 @@ impl ChallengeStore for FaultyStore {
         ttl: Duration,
         deadline: Deadline,
     ) -> Result<Insertion, StoreError> {
-        self.inner.insert(id, challenge, ttl, deadline).await
+        match self.fault {
+            Fault::HangInserts => std::future::pending().await,
+            Fault::LoseConsumeReply | Fault::HangClaims => {
+                self.inner.insert(id, challenge, ttl, deadline).await
+            }
+        }
     }
 
     async fn claim_attempt(
@@ -674,7 +693,12 @@ impl ChallengeStore for FaultyStore {
         id: &ChallengeId,
         deadline: Deadline,
     ) -> Result<Attempt, StoreError> {
-        self.inner.claim_attempt(id, deadline).await
+        match self.fault {
+            Fault::HangClaims => std::future::pending().await,
+            Fault::LoseConsumeReply | Fault::HangInserts => {
+                self.inner.claim_attempt(id, deadline).await
+            }
+        }
     }
 
     async fn consume(
@@ -685,6 +709,7 @@ impl ChallengeStore for FaultyStore {
         let consumed = self.inner.consume(id, deadline).await;
         match self.fault {
             Fault::LoseConsumeReply => consumed.and(Err(StoreError::Timeout)),
+            Fault::HangClaims | Fault::HangInserts => consumed,
         }
     }
 
@@ -695,4 +720,46 @@ impl ChallengeStore for FaultyStore {
     async fn check_writable(&self) -> Result<(), StoreError> {
         self.inner.check_writable().await
     }
+}
+
+/// Returns a metric's tags, sorted.
+pub(crate) fn labels(key: &CompositeKey) -> Vec<(String, String)> {
+    let mut labels: Vec<_> = key
+        .key()
+        .labels()
+        .map(|label| (label.key().to_owned(), label.value().to_owned()))
+        .collect();
+    labels.sort();
+    labels
+}
+
+/// Returns `expected` as sorted tags, to compare with [`labels`].
+pub(crate) fn pairs(expected: &[(&str, &str)]) -> Vec<(String, String)> {
+    let mut pairs: Vec<_> = expected
+        .iter()
+        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+        .collect();
+    pairs.sort();
+    pairs
+}
+
+/// A metrics snapshot, from [`metrics_util::debugging::Snapshot::into_vec`].
+pub(crate) type Snapshot = [(CompositeKey, Option<Unit>, Option<SharedString>, DebugValue)];
+
+/// Returns the count of the counter `name` with exactly the tags `expected`, or 0 if it was
+/// never incremented.
+pub(crate) fn counter(snapshot: &Snapshot, name: &str, expected: &[(&str, &str)]) -> u64 {
+    snapshot
+        .iter()
+        .find_map(|(key, _, _, value)| {
+            (key.kind() == MetricKind::Counter
+                && key.key().name() == name
+                && labels(key) == pairs(expected))
+            .then_some(value)
+        })
+        .and_then(|value| match value {
+            DebugValue::Counter(count) => Some(*count),
+            _ => None,
+        })
+        .unwrap_or(0)
 }

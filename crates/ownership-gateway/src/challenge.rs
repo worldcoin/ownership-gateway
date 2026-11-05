@@ -7,7 +7,11 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use axum::{Json, extract::State, http::HeaderMap};
+use axum::{
+    Json,
+    extract::{Extension, State},
+    http::HeaderMap,
+};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use ownership_token::Audience;
@@ -133,10 +137,13 @@ pub(crate) struct ChallengeResponse {
 /// Issues a challenge for an enabled audience: `POST /v1/challenges`.
 pub(crate) async fn post_challenge(
     State(state): State<AppState>,
+    Extension(deadline): Extension<Deadline>,
     headers: HeaderMap,
     ApiJson(request): ApiJson<ChallengeRequest>,
 ) -> Result<Json<ChallengeResponse>, ApiError> {
-    let deadline = Deadline::after(state.request_deadline);
+    if !state.issuance_enabled {
+        return Err(ApiError::Unavailable);
+    }
     let policy = state
         .policies
         .enabled_policy(&request.aud)
