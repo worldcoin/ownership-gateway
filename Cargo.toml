@@ -19,6 +19,7 @@ aws-sdk-kms = { version = "1", default-features = false, features = ["default-ht
 axum = "0.8"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
+ciborium = "0.2"
 clap = { version = "4", features = ["derive", "env"] }
 eddsa-babyjubjub = { package = "taceo-eddsa-babyjubjub", version = "0.6" }
 eyre = "0.6"
@@ -52,3 +53,14 @@ unreachable_pub = "warn"
 pedantic = { level = "warn", priority = -1 }
 missing_panics_doc = "allow"
 module_name_repetitions = "allow"
+
+# ProveKit's debug-only transcript pattern is omitted from serialized proofs.
+# These crates must share release-mode transcript behavior to verify wire proofs.
+[profile.dev.package.provekit-common]
+debug-assertions = false
+[profile.dev.package.provekit-whir]
+debug-assertions = false
+[profile.dev.package.provekit-prover]
+debug-assertions = false
+[profile.dev.package.provekit-verifier]
+debug-assertions = false

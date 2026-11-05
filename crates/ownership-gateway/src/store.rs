@@ -22,7 +22,8 @@ use crate::{
     telemetry::{self, Dependency, ErrorChain, FailureClass},
 };
 
-const COMMAND_TIMEOUT: Duration = Duration::from_millis(250);
+/// How long one Redis command may take.
+pub(crate) const COMMAND_TIMEOUT: Duration = Duration::from_millis(250);
 const MAX_IN_FLIGHT_COMMANDS: usize = 128;
 /// The least time between two replacements of the connection.
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(1);

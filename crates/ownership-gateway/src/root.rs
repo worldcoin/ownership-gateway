@@ -13,7 +13,8 @@ use crate::{
     telemetry::{self, Dependency, ErrorChain, FailureClass},
 };
 
-const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(1);
+/// How long one root check attempt may take.
+pub(crate) const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_BODY_BYTES: usize = 4096;
 
 /// The base URL of the root service; checks go to `{base}/is-valid-root`. Its `Debug` output
