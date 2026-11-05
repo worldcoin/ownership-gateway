@@ -1,0 +1,34 @@
+[package]
+name = "ownership-proxy"
+description = "Verifying sidecar for World ID ownership tokens."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+clap.workspace = true
+http.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+metrics.workspace = true
+ownership-token = { path = "../ownership-token", features = ["remote-jwks", "tower"] }
+serde_json.workspace = true
+telemetry-batteries.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+ownership-token = { path = "../ownership-token", features = ["test-util"] }
+reqwest.workspace = true
+wiremock.workspace = true
+
+[lints]
+workspace = true
