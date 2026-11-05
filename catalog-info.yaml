@@ -1,0 +1,19 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  annotations:
+    github.com/project-slug: worldcoin/ownership-gateway
+  tags: ['code-lang:rust']
+  description: World ID ownership-proof (WIP-103) token gateway, verifier library and sidecar.
+  links:
+    - title: Linear
+      url: PLACEHOLDER-ADD-LINEAR-URL
+    - title: Documentation
+      url: PLACEHOLDER-ADD-DOCUMENTATION-URL
+    - title: Slack
+      url: PLACEHOLDER-ADD-SLACK-URL
+  name: ownership-gateway
+spec:
+  lifecycle: experimental
+  owner: team-protocol
+  type: service
