@@ -1,0 +1,19 @@
+[workspace]
+git_release_enable = true
+git_release_type = "auto"
+pr_labels = ["release"]
+release = false
+publish = false
+changelog_update = true
+
+[[package]]
+name = "ownership-token"
+git_tag_name = "v{{ version }}"
+git_release_name = "v{{ version }}"
+release = true
+publish = true
+
+[[package]]
+name = "ownership-proxy"
+release = false
+publish = false
