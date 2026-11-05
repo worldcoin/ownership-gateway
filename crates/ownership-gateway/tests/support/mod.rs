@@ -3,19 +3,30 @@
 #![allow(dead_code)]
 
 use std::{
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
+use async_trait::async_trait;
 use axum::Router;
 use eddsa_babyjubjub::EdDSAPrivateKey;
 use ownership_gateway::{
     policy::Policies,
     server::{admin_router, router},
+    signing::{DEFAULT_FAILURE_THRESHOLD, KmsClient, KmsFailure, KmsSigner},
     state::AppState,
     store::{ChallengeStore, RedisStore},
     verification::{ProofVerifier, V1Proof},
 };
+use ownership_token::{Jwk, JwkSet};
+use p256::{
+    ecdsa::{Signature, SigningKey, signature::hazmat::PrehashSigner as _},
+    pkcs8::EncodePublicKey as _,
+};
+use rand::rngs::OsRng;
 use reqwest::{Method, StatusCode};
 use serde_json::Value;
 use testcontainers::{ContainerAsync, ContainerRequest, ImageExt as _, runners::AsyncRunner as _};
@@ -382,5 +393,97 @@ impl ProofVerifier for GatedVerifier {
         self.release.lock().unwrap().recv().unwrap();
         let _ = self.finished.send(());
         Ok(())
+    }
+}
+
+/// How [`TestKms`] answers signing requests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KmsMode {
+    /// Signs with the key it publishes.
+    Healthy,
+    /// Fails as if KMS were unreachable, which is retryable.
+    Unreachable,
+    /// Rejects the request, which is not retryable.
+    Denied,
+    /// Throttles the request, which is not retried.
+    Throttled,
+    /// Never answers.
+    Hanging,
+    /// Signs with a key other than the one it publishes.
+    WrongKey,
+}
+
+/// A fake KMS holding one P-256 key.
+pub(crate) struct TestKms {
+    key: SigningKey,
+    wrong_key: SigningKey,
+    mode: Mutex<KmsMode>,
+    public_key_available: AtomicBool,
+    sign_requests: AtomicUsize,
+}
+
+impl TestKms {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            key: SigningKey::random(&mut OsRng),
+            wrong_key: SigningKey::random(&mut OsRng),
+            mode: Mutex::new(KmsMode::Healthy),
+            public_key_available: AtomicBool::new(true),
+            sign_requests: AtomicUsize::new(0),
+        })
+    }
+
+    pub(crate) fn set_mode(&self, mode: KmsMode) {
+        *self.mode.lock().unwrap() = mode;
+    }
+
+    pub(crate) fn set_public_key_available(&self, available: bool) {
+        self.public_key_available.store(available, Ordering::SeqCst);
+    }
+
+    pub(crate) fn sign_requests(&self) -> usize {
+        self.sign_requests.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn jwks(&self) -> JwkSet {
+        JwkSet::new(vec![Jwk::from_public_key(self.key.verifying_key())])
+    }
+
+    /// Loads a signer for this KMS with the default failure threshold.
+    pub(crate) async fn signer(self: &Arc<Self>) -> KmsSigner {
+        KmsSigner::load(self.clone(), "test-key".into(), DEFAULT_FAILURE_THRESHOLD)
+            .await
+            .unwrap()
+    }
+}
+
+#[async_trait]
+impl KmsClient for TestKms {
+    async fn sign_digest(&self, _: &str, digest: [u8; 32]) -> Result<Vec<u8>, KmsFailure> {
+        self.sign_requests.fetch_add(1, Ordering::SeqCst);
+        let mode = *self.mode.lock().unwrap();
+        let key = match mode {
+            KmsMode::Healthy => &self.key,
+            KmsMode::WrongKey => &self.wrong_key,
+            KmsMode::Unreachable => return Err(KmsFailure::Connect("connection refused".into())),
+            KmsMode::Denied => return Err(KmsFailure::Permanent("access denied".into())),
+            KmsMode::Throttled => return Err(KmsFailure::Throttled("rate exceeded".into())),
+            KmsMode::Hanging => std::future::pending().await,
+        };
+        let signature: Signature = key.sign_prehash(&digest).unwrap();
+        Ok(signature.to_der().as_bytes().to_vec())
+    }
+
+    async fn public_key(&self, _: &str) -> Result<Vec<u8>, KmsFailure> {
+        if !self.public_key_available.load(Ordering::SeqCst) {
+            return Err(KmsFailure::Connect("connection refused".into()));
+        }
+        Ok(self
+            .key
+            .verifying_key()
+            .to_public_key_der()
+            .unwrap()
+            .as_bytes()
+            .to_vec())
     }
 }
