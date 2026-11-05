@@ -23,6 +23,16 @@ env:
   NARGO_SHA256: 64048040befd55a987158b11137d8f38f9688f696db4d84910dd1bcf0442fb80
 
 jobs:
+  gateway-docker:
+    name: gateway image build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - run: docker build -f crates/ownership-gateway/Dockerfile -t ownership-gateway:ci .
+
   lint:
     name: fmt and clippy
     runs-on: ubuntu-latest

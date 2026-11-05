@@ -104,3 +104,11 @@ With `TELEMETRY_METRICS_BACKEND=statsd`, the gateway installs the StatsD recorde
 | `ownership_gateway.jwks.served` | counter | | JWKS responses served. |
 
 Only `http.duration` is sent as a distribution, which Datadog aggregates across pods; the other histograms are aggregated by the agent on each node.
+
+## Images
+
+The gateway image is published to `ghcr.io/worldcoin/ownership-gateway` for amd64.
+Deploy by `sha-<7>` tag or image digest, passing `serve` or `jwks` as arguments.
+A tag such as `ownership-gateway/v0.1.0` publishes the versioned image and creates
+a draft GitHub release with its digest. Stable version tags and pushes to `main`
+also update `latest`.
