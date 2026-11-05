@@ -26,7 +26,7 @@ fn allowed_origin<'a>(policies: &Policies, headers: &'a HeaderMap) -> Option<&'a
 }
 
 /// Adds the CORS headers to every response for an origin that an enabled audience allows:
-/// the echoed origin and `Vary: Origin`.
+/// the echoed origin, `Vary: Origin`, and `Retry-After` as a readable header.
 pub(crate) async fn add_headers(
     State(policies): State<Arc<Policies>>,
     request: Request,
@@ -38,6 +38,10 @@ pub(crate) async fn add_headers(
         let headers = response.headers_mut();
         headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
         headers.insert(header::VARY, HeaderValue::from_static("Origin"));
+        headers.insert(
+            header::ACCESS_CONTROL_EXPOSE_HEADERS,
+            HeaderValue::from_static("Retry-After"),
+        );
     }
     response
 }
@@ -75,6 +79,15 @@ pub(crate) async fn preflight(
     );
     headers.insert(header::ACCESS_CONTROL_MAX_AGE, PREFLIGHT_MAX_AGE_SECS);
     Ok(response)
+}
+
+/// Rejects a browser request whose origin no enabled audience allows. A request without an
+/// `Origin` header does not come from a browser page and passes.
+pub(crate) fn check_any_origin(policies: &Policies, headers: &HeaderMap) -> Result<(), ApiError> {
+    if headers.contains_key(header::ORIGIN) && allowed_origin(policies, headers).is_none() {
+        return Err(ApiError::OriginNotAllowed);
+    }
+    Ok(())
 }
 
 /// Rejects a browser request whose origin `policy` does not allow. A request without an

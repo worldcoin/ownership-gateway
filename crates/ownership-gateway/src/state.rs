@@ -5,7 +5,7 @@ use std::{sync::Arc, time::Duration};
 use axum::extract::FromRef;
 use url::Url;
 
-use crate::{policy::Policies, store::ChallengeStore};
+use crate::{exchange::Exchange, policy::Policies, store::ChallengeStore};
 
 /// State shared by the public and admin routers.
 #[derive(Clone)]
@@ -20,6 +20,8 @@ pub struct AppState {
     pub challenge_ttl: Duration,
     /// The time each request may take.
     pub request_deadline: Duration,
+    /// The token exchange.
+    pub exchange: Arc<Exchange>,
 }
 
 impl FromRef<AppState> for Arc<Policies> {

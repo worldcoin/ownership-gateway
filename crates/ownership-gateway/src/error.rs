@@ -3,12 +3,16 @@
 use axum::{
     Json,
     extract::{FromRequest, Request},
-    http::StatusCode,
+    http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use serde::{Serialize, de::DeserializeOwned};
 
 /// A failed public API request, rendered as `{"error": {"code": ..., "message": ...}}`.
+///
+/// A rejected exchange is [`ApiError::ChallengeUnusable`] or [`ApiError::ProofRejected`], and
+/// neither says which check failed. A 503 says whether the client may retry the same request
+/// (`retry_later`) or must request a new challenge (`request_new_challenge`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ApiError {
     /// The body is not the expected JSON (400).
@@ -19,8 +23,20 @@ pub enum ApiError {
     AudienceNotAllowed,
     /// The browser origin is not allowed for the audience (403).
     OriginNotAllowed,
+    /// The proof, or the root it was made against, was rejected (401).
+    ProofRejected,
+    /// The challenge is unknown, expired, spent or already attempted (401).
+    ChallengeUnusable,
     /// A dependency failed before anything was spent (503). The client may retry the request.
     Unavailable,
+    /// Verification capacity is exhausted; the client may retry after one second (503).
+    Overloaded,
+    /// The challenge may be spent: claiming it or a later step failed or ran out of time (503).
+    /// The client must request a new challenge.
+    NeedsNewChallenge,
+    /// KMS throttled signing after the challenge was consumed (503). The client may request a
+    /// new challenge after one second.
+    Throttled,
 }
 
 impl ApiError {
@@ -46,10 +62,31 @@ impl ApiError {
                 "origin_not_allowed",
                 "Origin not allowed",
             ),
+            Self::ProofRejected => (StatusCode::UNAUTHORIZED, "proof_rejected", "Proof rejected"),
+            Self::ChallengeUnusable => (
+                StatusCode::UNAUTHORIZED,
+                "challenge_unusable",
+                "Challenge unusable",
+            ),
             Self::Unavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "retry_later",
                 "Service unavailable",
+            ),
+            Self::Overloaded => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "retry_later",
+                "Service overloaded",
+            ),
+            Self::NeedsNewChallenge => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "request_new_challenge",
+                "Service unavailable",
+            ),
+            Self::Throttled => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "request_new_challenge",
+                "Signing throttled",
             ),
         }
     }
@@ -69,13 +106,19 @@ struct ErrorDetail {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, code, message) = self.parts();
-        (
+        let mut response = (
             status,
             Json(ErrorBody {
                 error: ErrorDetail { code, message },
             }),
         )
-            .into_response()
+            .into_response();
+        if matches!(self, Self::Overloaded | Self::Throttled) {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+        }
+        response
     }
 }
 
