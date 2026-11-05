@@ -1581,6 +1581,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "metrics",
+ "metrics-exporter-statsd",
  "ownership-token",
  "reqwest 0.12.28",
  "serde_json",
