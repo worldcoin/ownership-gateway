@@ -12,6 +12,26 @@ A client asks the gateway for a challenge, proves with its authenticator that it
 
 An ownership proof shows control of an authenticator key of a registered account. It does not prove personhood or that one person holds one account.
 
+## Proxy telemetry
+
+The proxy sends DogStatsD metrics to `TELEMETRY_STATSD_HOST` (default `localhost`)
+and `TELEMETRY_STATSD_PORT` (default `8125`). `TELEMETRY_STATSD_PREFIX` optionally
+prefixes metric names. The proxy installs its own recorder; telemetry-batteries
+initializes tracing only, regardless of `TELEMETRY_METRICS_BACKEND`.
+
+Set `DD_SERVICE`, `DD_ENV`, and `DD_VERSION` for Datadog unified service tagging.
+For a sidecar, `DD_SERVICE` identifies the consumer service. Set `DD_ENTITY_ID`
+from the pod UID to enable Datadog UDP origin detection and pod tags:
+
+```yaml
+- name: DD_ENTITY_ID
+  valueFrom:
+    fieldRef:
+      fieldPath: metadata.uid
+```
+
+Unset variables do not add tags.
+
 ## Development
 
 Building the gateway needs `nargo` 1.0.0-beta.26; the Nix dev shell provides it and the pinned Rust toolchain (`nix develop`).
