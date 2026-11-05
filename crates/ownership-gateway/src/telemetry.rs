@@ -54,6 +54,15 @@ pub(crate) fn record_call(
     }
 }
 
+/// Sets the `ready{component}` gauge for a dependency.
+pub(crate) fn set_ready(component: Dependency, ready: bool) {
+    metrics::gauge!("ownership_gateway.ready", "component" => component.as_str()).set(if ready {
+        1.0
+    } else {
+        0.0
+    });
+}
+
 /// Formats an error followed by its sources, separated by `: `.
 pub(crate) struct ErrorChain<'a>(pub(crate) &'a (dyn Error + 'static));
 

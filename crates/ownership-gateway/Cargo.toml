@@ -7,15 +7,20 @@ publish = false
 
 [dependencies]
 async-trait.workspace = true
+axum.workspace = true
 base64.workspace = true
+chrono.workspace = true
 clap.workspace = true
+eyre.workspace = true
 metrics.workspace = true
 ownership-token = { path = "../ownership-token" }
 rand.workspace = true
 redis.workspace = true
+rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+telemetry-batteries.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -23,7 +28,7 @@ url.workspace = true
 world-id-primitives.workspace = true
 
 [dev-dependencies]
-rustls.workspace = true
+reqwest.workspace = true
 testcontainers.workspace = true
 testcontainers-modules = { workspace = true, features = ["redis"] }
 tokio = { workspace = true, features = ["test-util"] }
