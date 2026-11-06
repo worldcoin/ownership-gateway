@@ -15,14 +15,15 @@ use axum::Router;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use eddsa_babyjubjub::EdDSAPrivateKey;
 use ownership_gateway::{
-    challenge::ChallengeId,
+    challenge::{Challenge, ChallengeId},
     exchange::Exchange,
     policy::Policies,
+    retry::Deadline,
     root::RootValidator,
     server::{admin_router, router},
     signing::{DEFAULT_FAILURE_THRESHOLD, KmsClient, KmsFailure, KmsSigner},
     state::AppState,
-    store::{ChallengeStore, RedisStore},
+    store::{Attempt, ChallengeStore, Insertion, RedisStore, StoreError},
     verification::{ProofVerifier, V1Proof, VerificationPool},
 };
 use ownership_token::{Jwk, JwkSet};
@@ -183,18 +184,34 @@ impl TestIssuance {
 pub(crate) struct TestStack {
     pub(crate) redis: TestRedis,
     pub(crate) issuance: TestIssuance,
+    pub(crate) state: AppState,
     pub(crate) gateway: TestGateway,
 }
 
 impl TestStack {
     pub(crate) async fn start(verifier: Arc<dyn ProofVerifier>, workers: usize) -> Self {
+        Self::start_with(verifier, workers, |redis, _, exchange| {
+            app_state(Arc::new(redis.store.clone()), exchange)
+        })
+        .await
+    }
+
+    /// Starts a stack whose gateway serves the state that `state` builds from the stack's Redis,
+    /// its fakes, and an exchange that verifies with `verifier` on `workers` workers.
+    pub(crate) async fn start_with(
+        verifier: Arc<dyn ProofVerifier>,
+        workers: usize,
+        state: impl FnOnce(&TestRedis, &TestIssuance, Exchange) -> AppState,
+    ) -> Self {
         let redis = TestRedis::start().await;
         let issuance = TestIssuance::start().await;
         let exchange = issuance.build_exchange(verifier, workers).await;
-        let gateway = TestGateway::start(app_state(Arc::new(redis.store.clone()), exchange)).await;
+        let state = state(&redis, &issuance, exchange);
+        let gateway = TestGateway::start(state.clone()).await;
         Self {
             redis,
             issuance,
+            state,
             gateway,
         }
     }
@@ -606,12 +623,77 @@ pub(crate) async fn accepted_request(gateway: &TestGateway) -> Value {
     token_request(&gateway.challenge("service-a").await, *commitment, proof)
 }
 
+fn challenge_id(request: &Value) -> ChallengeId {
+    request["challenge_id"].as_str().unwrap().parse().unwrap()
+}
+
 /// Returns the stored record of the request's challenge, if Redis still holds it.
 pub(crate) async fn stored_challenge(stack: &TestStack, request: &Value) -> Option<String> {
-    let id: ChallengeId = request["challenge_id"].as_str().unwrap().parse().unwrap();
     redis::cmd("GET")
-        .arg(id.redis_key())
+        .arg(challenge_id(request).redis_key())
         .query_async(&mut stack.redis.connection().await)
         .await
         .unwrap()
+}
+
+/// Deletes the request's challenge from Redis, as its expiry does.
+pub(crate) async fn delete_challenge(stack: &TestStack, request: &Value) {
+    let _: u64 = redis::cmd("DEL")
+        .arg(challenge_id(request).redis_key())
+        .query_async(&mut stack.redis.connection().await)
+        .await
+        .unwrap();
+}
+
+/// How a [`FaultyStore`] fails.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Fault {
+    /// Consumes challenges but reports every consume as timed out, as when the reply is lost.
+    LoseConsumeReply,
+}
+
+/// A Redis store that fails in one way.
+pub(crate) struct FaultyStore {
+    pub(crate) inner: RedisStore,
+    pub(crate) fault: Fault,
+}
+
+#[async_trait]
+impl ChallengeStore for FaultyStore {
+    async fn insert(
+        &self,
+        id: &ChallengeId,
+        challenge: &Challenge,
+        ttl: Duration,
+        deadline: Deadline,
+    ) -> Result<Insertion, StoreError> {
+        self.inner.insert(id, challenge, ttl, deadline).await
+    }
+
+    async fn claim_attempt(
+        &self,
+        id: &ChallengeId,
+        deadline: Deadline,
+    ) -> Result<Attempt, StoreError> {
+        self.inner.claim_attempt(id, deadline).await
+    }
+
+    async fn consume(
+        &self,
+        id: &ChallengeId,
+        deadline: Deadline,
+    ) -> Result<Option<Challenge>, StoreError> {
+        let consumed = self.inner.consume(id, deadline).await;
+        match self.fault {
+            Fault::LoseConsumeReply => consumed.and(Err(StoreError::Timeout)),
+        }
+    }
+
+    async fn discard(&self, id: &ChallengeId, deadline: Deadline) -> Result<(), StoreError> {
+        self.inner.discard(id, deadline).await
+    }
+
+    async fn check_writable(&self) -> Result<(), StoreError> {
+        self.inner.check_writable().await
+    }
 }
