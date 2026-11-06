@@ -1,0 +1,90 @@
+name: release image
+
+on:
+  push:
+    tags:
+      - "ownership-gateway/v*"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag, or commit SHA to build."
+        required: true
+        type: string
+      version:
+        description: "Release version, without the v prefix."
+        required: true
+        type: string
+      dry_run:
+        description: "Build without publishing."
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: release-image-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      sha: ${{ steps.release.outputs.sha }}
+      publish: ${{ steps.release.outputs.publish }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
+      - id: release
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            version="${GITHUB_REF_NAME#*/v}"
+            publish=true
+          else
+            version="$INPUT_VERSION"
+            publish=$([[ "$DRY_RUN" == "true" ]] && echo false || echo true)
+          fi
+          {
+            echo "version=$version"
+            echo "sha=$(git rev-parse HEAD)"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+      attestations: write
+    uses: ./.github/workflows/ownership-gateway-image.yml
+    with:
+      ref: ${{ needs.prepare.outputs.sha }}
+      version: v${{ needs.prepare.outputs.version }}
+      push: ${{ needs.prepare.outputs.publish == 'true' }}
+
+  release:
+    needs: [prepare, build]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.sha }}
+          IMAGE: ${{ needs.build.outputs.image }}
+          DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          tag="ownership-gateway/v$VERSION"
+          printf 'Image: %s@%s\n' "$IMAGE" "$DIGEST" > "$RUNNER_TEMP/body.md"
+          gh release create --draft --target "$RELEASE_SHA" -t "$tag" \
+            -F "$RUNNER_TEMP/body.md" "$tag"
