@@ -16,6 +16,7 @@ ciborium.workspace = true
 clap.workspace = true
 eyre.workspace = true
 metrics.workspace = true
+metrics-exporter-statsd.workspace = true
 ownership-token = { path = "../ownership-token" }
 p256.workspace = true
 rand.workspace = true

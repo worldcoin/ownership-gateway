@@ -30,7 +30,7 @@ async fn main() -> eyre::Result<()> {
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .map_err(|_| eyre!("installing the TLS crypto provider"))?;
-    let _telemetry = telemetry_batteries::init().wrap_err("initializing telemetry")?;
+    let _telemetry = ownership_gateway::telemetry::init().wrap_err("initializing telemetry")?;
     match Config::parse().command {
         Command::Serve(config) => serve(*config).await,
         Command::Jwks(config) => serve_jwks(config).await,
