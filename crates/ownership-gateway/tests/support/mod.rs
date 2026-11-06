@@ -4,7 +4,7 @@
 
 use std::{
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
@@ -12,14 +12,18 @@ use std::{
 
 use async_trait::async_trait;
 use axum::Router;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use eddsa_babyjubjub::EdDSAPrivateKey;
 use ownership_gateway::{
+    challenge::ChallengeId,
+    exchange::Exchange,
     policy::Policies,
+    root::RootValidator,
     server::{admin_router, router},
     signing::{DEFAULT_FAILURE_THRESHOLD, KmsClient, KmsFailure, KmsSigner},
     state::AppState,
     store::{ChallengeStore, RedisStore},
-    verification::{ProofVerifier, V1Proof},
+    verification::{ProofVerifier, V1Proof, VerificationPool},
 };
 use ownership_token::{Jwk, JwkSet};
 use p256::{
@@ -28,7 +32,7 @@ use p256::{
 };
 use rand::rngs::OsRng;
 use reqwest::{Method, StatusCode};
-use serde_json::Value;
+use serde_json::{Value, json};
 use testcontainers::{ContainerAsync, ContainerRequest, ImageExt as _, runners::AsyncRunner as _};
 use testcontainers_modules::redis::Redis;
 use tokio::{net::TcpListener, sync::mpsc, task::JoinHandle};
@@ -115,13 +119,84 @@ pub(crate) fn unreachable_store() -> RedisStore {
 }
 
 /// Gateway state with [`POLICIES`], issuer [`ISSUER`] and the spec's default lifetimes.
-pub(crate) fn app_state(store: Arc<dyn ChallengeStore>) -> AppState {
+pub(crate) fn app_state(store: Arc<dyn ChallengeStore>, exchange: Exchange) -> AppState {
     AppState {
         store,
         policies: Arc::new(Policies::parse(POLICIES.as_bytes()).unwrap()),
         token_url: format!("{ISSUER}/v1/tokens").parse().unwrap(),
         challenge_ttl: Duration::from_mins(2),
         request_deadline: Duration::from_secs(5),
+        exchange: Arc::new(exchange),
+    }
+}
+
+/// Accepts every proof, for tests that check what happens around verification.
+pub(crate) struct AcceptingVerifier;
+
+impl ProofVerifier for AcceptingVerifier {
+    fn verify(&self, _: &V1Proof) -> Result<(), world_id_proof::ProofError> {
+        Ok(())
+    }
+}
+
+/// The exchange's network dependencies, faked: a root service that accepts every root, and KMS.
+pub(crate) struct TestIssuance {
+    pub(crate) roots: TestRootService,
+    pub(crate) kms: Arc<TestKms>,
+}
+
+impl TestIssuance {
+    pub(crate) async fn start() -> Self {
+        install_crypto_provider();
+        let roots = TestRootService::start().await;
+        roots.answer_valid(true).await;
+        Self {
+            roots,
+            kms: TestKms::new(),
+        }
+    }
+
+    /// Returns an exchange that verifies with `verifier` on `workers` workers, with as many
+    /// queue places.
+    pub(crate) async fn build_exchange(
+        &self,
+        verifier: Arc<dyn ProofVerifier>,
+        workers: usize,
+    ) -> Exchange {
+        Exchange {
+            issuer: ISSUER.parse().unwrap(),
+            use_case: "stage-test".parse().unwrap(),
+            verification: VerificationPool::new(
+                verifier,
+                std::num::NonZeroUsize::new(workers).unwrap(),
+                workers,
+            ),
+            roots: Arc::new(
+                RootValidator::new(&self.roots.url(), Duration::from_secs(30)).unwrap(),
+            ),
+            signer: Arc::new(self.kms.signer().await),
+        }
+    }
+}
+
+/// A gateway on a real Redis, with its other dependencies faked.
+pub(crate) struct TestStack {
+    pub(crate) redis: TestRedis,
+    pub(crate) issuance: TestIssuance,
+    pub(crate) gateway: TestGateway,
+}
+
+impl TestStack {
+    pub(crate) async fn start(verifier: Arc<dyn ProofVerifier>, workers: usize) -> Self {
+        let redis = TestRedis::start().await;
+        let issuance = TestIssuance::start().await;
+        let exchange = issuance.build_exchange(verifier, workers).await;
+        let gateway = TestGateway::start(app_state(Arc::new(redis.store.clone()), exchange)).await;
+        Self {
+            redis,
+            issuance,
+            gateway,
+        }
     }
 }
 
@@ -220,6 +295,11 @@ impl TestGateway {
             .await
             .unwrap()
             .status()
+    }
+
+    /// Sends a token request.
+    pub(crate) async fn exchange(&self, request: &Value) -> reqwest::Response {
+        self.post("/v1/tokens", request, None).await
     }
 
     /// Issues a challenge and returns the response body.
@@ -486,4 +566,52 @@ impl KmsClient for TestKms {
             .as_bytes()
             .to_vec())
     }
+}
+
+/// Encodes a proof as the API expects it: standard base64 of its CBOR.
+pub(crate) fn encode(proof: &OwnershipProof) -> String {
+    let mut cbor = Vec::new();
+    ciborium::into_writer(proof, &mut cbor).unwrap();
+    STANDARD.encode(cbor)
+}
+
+/// A request answering `challenge` with `proof` for `commitment`.
+pub(crate) fn token_request(challenge: &Value, commitment: FieldElement, proof: &str) -> Value {
+    json!({
+        "challenge_id": challenge["challenge_id"],
+        "commitment": commitment.to_string(),
+        "proof": proof,
+    })
+}
+
+/// A request answering a fresh challenge for `aud` with a real proof.
+pub(crate) async fn proven_request(gateway: &TestGateway, aud: &str) -> Value {
+    let challenge = gateway.challenge(aud).await;
+    let fixture = ProofFixture::for_challenge(&challenge).await;
+    token_request(&challenge, fixture.commitment, &encode(&fixture.proof))
+}
+
+/// A request for a fresh challenge with a well-formed proof that only [`AcceptingVerifier`]
+/// accepts. One proof is generated per test binary.
+pub(crate) async fn accepted_request(gateway: &TestGateway) -> Value {
+    static FIXTURE: OnceLock<(String, FieldElement)> = OnceLock::new();
+    let (proof, commitment) = tokio::task::spawn_blocking(|| {
+        FIXTURE.get_or_init(|| {
+            let fixture = ProofFixture::generate(FieldElement::ONE, FieldElement::ONE);
+            (encode(&fixture.proof), fixture.commitment)
+        })
+    })
+    .await
+    .unwrap();
+    token_request(&gateway.challenge("service-a").await, *commitment, proof)
+}
+
+/// Returns the stored record of the request's challenge, if Redis still holds it.
+pub(crate) async fn stored_challenge(stack: &TestStack, request: &Value) -> Option<String> {
+    let id: ChallengeId = request["challenge_id"].as_str().unwrap().parse().unwrap();
+    redis::cmd("GET")
+        .arg(id.redis_key())
+        .query_async(&mut stack.redis.connection().await)
+        .await
+        .unwrap()
 }

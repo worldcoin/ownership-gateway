@@ -6,13 +6,16 @@ use clap::Parser as _;
 use eyre::{WrapErr as _, eyre};
 use ownership_gateway::{
     config::{Command, Config, JwksConfig, PublishedKeyIds, ServeConfig},
+    exchange::Exchange,
     jwks::{self, JwksState},
     policy::Policies,
     retry::jittered,
+    root::RootValidator,
     server::{admin_router, router},
-    signing::{AwsKms, load_jwk},
+    signing::{AwsKms, KmsSigner, load_jwk},
     state::AppState,
     store::RedisStore,
+    verification::{EmbeddedVerifier, VerificationPool},
 };
 use ownership_token::JwkSet;
 use tokio::net::TcpListener;
@@ -33,13 +36,7 @@ async fn main() -> eyre::Result<()> {
 }
 
 async fn serve(config: ServeConfig) -> eyre::Result<()> {
-    let state = AppState {
-        store: Arc::new(RedisStore::new(&config.redis_url).wrap_err("configuring Redis")?),
-        policies: Arc::new(Policies::load(&config.audience_policy_path)?),
-        token_url: config.token_url(),
-        challenge_ttl: config.challenge_ttl,
-        request_deadline: config.request_deadline,
-    };
+    let state = build_state(&config).await?;
     let public = TcpListener::bind(config.listeners.public)
         .await
         .wrap_err("binding the public listener")?;
@@ -60,6 +57,44 @@ async fn serve(config: ServeConfig) -> eyre::Result<()> {
         },
     )?;
     Ok(())
+}
+
+/// Loads the verifier artifacts and the signing key and connects the dependencies.
+async fn build_state(config: &ServeConfig) -> eyre::Result<AppState> {
+    let policies = Policies::load(&config.audience_policy_path)?;
+    let verifier = tokio::task::spawn_blocking(EmbeddedVerifier::load)
+        .await
+        .wrap_err("loading the verifier artifacts")?
+        .wrap_err("loading the verifier artifacts")?;
+    let signer = KmsSigner::load(
+        Arc::new(load_kms().await),
+        config.kms_signing_key_id.to_string(),
+        config.kms_failure_threshold,
+    )
+    .await
+    .wrap_err_with(|| format!("loading signing key {}", config.kms_signing_key_id))?;
+    let exchange = Exchange {
+        issuer: config.issuer.clone(),
+        use_case: config.use_case.clone(),
+        verification: VerificationPool::new(
+            Arc::new(verifier),
+            config.verify_concurrency,
+            config.verify_queue_depth,
+        ),
+        roots: Arc::new(
+            RootValidator::new(&config.root_source_url, config.root_failure_window)
+                .wrap_err("building the root client")?,
+        ),
+        signer: Arc::new(signer),
+    };
+    Ok(AppState {
+        store: Arc::new(RedisStore::new(&config.redis_url).wrap_err("configuring Redis")?),
+        policies: Arc::new(policies),
+        token_url: config.token_url(),
+        challenge_ttl: config.challenge_ttl,
+        request_deadline: config.request_deadline,
+        exchange: Arc::new(exchange),
+    })
 }
 
 async fn serve_jwks(config: JwksConfig) -> eyre::Result<()> {

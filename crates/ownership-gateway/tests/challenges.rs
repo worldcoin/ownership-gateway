@@ -14,13 +14,11 @@ use ownership_gateway::{
 };
 use reqwest::StatusCode;
 use serde_json::{Value, json};
-use support::{TestGateway, TestRedis, app_state, error_code, unreachable_store};
+use support::{AcceptingVerifier, TestStack, error_code};
 use world_id_primitives::{FieldElement, poseidon::ds};
 
-async fn gateway() -> (TestRedis, TestGateway) {
-    let redis = TestRedis::start().await;
-    let gateway = TestGateway::start(app_state(Arc::new(redis.store.clone()))).await;
-    (redis, gateway)
+async fn stack() -> TestStack {
+    TestStack::start(Arc::new(AcceptingVerifier), 1).await
 }
 
 fn field(body: &Value, name: &str) -> FieldElement {
@@ -29,7 +27,8 @@ fn field(body: &Value, name: &str) -> FieldElement {
 
 #[tokio::test]
 async fn issues_a_challenge_bound_to_the_audience() {
-    let (redis, gateway) = gateway().await;
+    let stack = stack().await;
+    let (redis, gateway) = (&stack.redis, &stack.gateway);
     let requested_at = SystemTime::now();
     let body = gateway.challenge("service-a").await;
     let id: ChallengeId = body["challenge_id"].as_str().unwrap().parse().unwrap();
@@ -63,7 +62,8 @@ async fn issues_a_challenge_bound_to_the_audience() {
 
 #[tokio::test]
 async fn each_audience_gets_its_own_context_and_each_challenge_a_fresh_nonce() {
-    let (_redis, gateway) = gateway().await;
+    let stack = stack().await;
+    let gateway = &stack.gateway;
     let first = gateway.challenge("service-a").await;
     let second = gateway.challenge("service-a").await;
     let other = gateway.challenge("service-b").await;
@@ -75,7 +75,8 @@ async fn each_audience_gets_its_own_context_and_each_challenge_a_fresh_nonce() {
 
 #[tokio::test]
 async fn unknown_and_disabled_audiences_are_forbidden() {
-    let (_redis, gateway) = gateway().await;
+    let stack = stack().await;
+    let gateway = &stack.gateway;
     for aud in ["missing", "disabled"] {
         let response = gateway
             .post("/v1/challenges", &json!({ "aud": aud }), None)
@@ -87,7 +88,8 @@ async fn unknown_and_disabled_audiences_are_forbidden() {
 
 #[tokio::test]
 async fn malformed_and_oversized_bodies_are_rejected() {
-    let (_redis, gateway) = gateway().await;
+    let stack = stack().await;
+    let gateway = &stack.gateway;
     for body in [
         "{",
         r#"{"aud":"bad audience"}"#,
@@ -106,7 +108,8 @@ async fn malformed_and_oversized_bodies_are_rejected() {
 
 #[tokio::test]
 async fn browser_origins_follow_the_audience_policy() {
-    let (_redis, gateway) = gateway().await;
+    let stack = stack().await;
+    let gateway = &stack.gateway;
     let response = gateway
         .post(
             "/v1/challenges",
@@ -121,6 +124,7 @@ async fn browser_origins_follow_the_audience_policy() {
         "https://app.example"
     );
     assert_eq!(headers["vary"], "Origin");
+    assert_eq!(headers["access-control-expose-headers"], "Retry-After");
 
     let response = gateway
         .post(
@@ -151,7 +155,8 @@ async fn browser_origins_follow_the_audience_policy() {
 
 #[tokio::test]
 async fn preflight_allows_only_listed_origins_posting_json() {
-    let (_redis, gateway) = gateway().await;
+    let stack = stack().await;
+    let gateway = &stack.gateway;
     let response = gateway
         .preflight(
             "/v1/challenges",
@@ -187,11 +192,12 @@ async fn preflight_allows_only_listed_origins_posting_json() {
 
 #[tokio::test]
 async fn readiness_follows_redis_and_liveness_does_not() {
-    let (_redis, gateway) = gateway().await;
+    let stack = stack().await;
+    let gateway = &stack.gateway;
     assert_eq!(gateway.probe("/health").await, StatusCode::OK);
     assert_eq!(gateway.probe("/ready").await, StatusCode::OK);
 
-    let gateway = TestGateway::start(app_state(Arc::new(unreachable_store()))).await;
+    stack.redis.container.stop().await.unwrap();
     assert_eq!(gateway.probe("/health").await, StatusCode::OK);
     assert_eq!(
         gateway.probe("/ready").await,

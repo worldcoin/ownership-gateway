@@ -1,16 +1,28 @@
 //! Command-line and environment configuration.
 
 use std::{
-    ffi::OsStr, fmt, marker::PhantomData, net::SocketAddr, num::NonZeroU64, path::PathBuf,
-    str::FromStr, time::Duration,
+    ffi::OsStr,
+    fmt,
+    marker::PhantomData,
+    net::SocketAddr,
+    num::{NonZeroU32, NonZeroU64, NonZeroUsize},
+    path::PathBuf,
+    str::FromStr,
+    time::Duration,
 };
 
 use clap::{Parser, Subcommand, builder::TypedValueParser, error::ErrorKind};
-use ownership_token::Issuer;
+use ownership_token::{Issuer, UseCase};
 use url::Url;
+
+use crate::{
+    exchange::MIN_REQUEST_DEADLINE, root::RootSourceUrl, signing::DEFAULT_FAILURE_THRESHOLD,
+};
 
 /// The longest challenge lifetime accepted.
 const MAX_CHALLENGE_TTL: Duration = Duration::from_mins(10);
+/// The most proof verification workers: the async runtime's limit on blocking threads.
+const MAX_VERIFY_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(512).unwrap();
 
 /// Gateway configuration, from command-line arguments or environment variables.
 #[derive(Debug, Parser)]
@@ -78,14 +90,62 @@ pub struct ServeConfig {
         value_parser = challenge_ttl
     )]
     pub challenge_ttl: Duration,
-    /// Whole-request deadline in milliseconds.
+    /// Whole-request deadline in milliseconds, at least 3500.
     #[arg(
         long = "request-deadline-ms",
         env = "OWNERSHIP_GATEWAY_REQUEST_DEADLINE_MS",
         default_value = "5000",
-        value_parser = millis
+        value_parser = request_deadline
     )]
     pub request_deadline: Duration,
+    /// Base URL of the root service, `world-id-gateway`. It may carry credentials, so neither
+    /// `--help` nor a parse error prints it.
+    #[arg(
+        long,
+        env = "OWNERSHIP_GATEWAY_ROOT_SOURCE_URL",
+        hide_env_values = true,
+        value_parser = secret::<RootSourceUrl>()
+    )]
+    pub root_source_url: RootSourceUrl,
+    /// How long every root check must fail before readiness is lost, in seconds.
+    #[arg(
+        long = "root-failure-window-secs",
+        env = "OWNERSHIP_GATEWAY_ROOT_FAILURE_WINDOW_SECS",
+        default_value = "30",
+        value_parser = seconds
+    )]
+    pub root_failure_window: Duration,
+    /// KMS key that signs tokens.
+    #[arg(long, env = "OWNERSHIP_GATEWAY_KMS_SIGNING_KEY_ID")]
+    pub kms_signing_key_id: KmsKeyId,
+    /// Consecutive failed signing attempts before readiness is lost.
+    #[arg(
+        long,
+        env = "OWNERSHIP_GATEWAY_KMS_FAILURE_THRESHOLD",
+        default_value_t = DEFAULT_FAILURE_THRESHOLD
+    )]
+    pub kms_failure_threshold: NonZeroU32,
+    /// WIP-103 use case named in issued tokens.
+    #[arg(long, env = "OWNERSHIP_GATEWAY_USE_CASE")]
+    pub use_case: UseCase,
+    /// Proof verification workers, at most 512. Defaults to the available CPUs, or one if they
+    /// cannot be counted.
+    #[arg(
+        long,
+        env = "OWNERSHIP_GATEWAY_VERIFY_CONCURRENCY",
+        default_value_t = std::thread::available_parallelism()
+            .unwrap_or(NonZeroUsize::MIN)
+            .min(MAX_VERIFY_CONCURRENCY),
+        value_parser = verify_concurrency
+    )]
+    pub verify_concurrency: NonZeroUsize,
+    /// Verifications that may wait for a worker, at most 65535.
+    #[arg(
+        long,
+        env = "OWNERSHIP_GATEWAY_VERIFY_QUEUE_DEPTH",
+        value_parser = clap::value_parser!(u16).map(usize::from)
+    )]
+    pub verify_queue_depth: usize,
 }
 
 impl ServeConfig {
@@ -275,6 +335,26 @@ fn challenge_ttl(value: &str) -> Result<Duration, String> {
     Ok(ttl)
 }
 
+fn request_deadline(value: &str) -> Result<Duration, String> {
+    let deadline = millis(value)?;
+    if deadline < MIN_REQUEST_DEADLINE {
+        return Err(format!(
+            "expected at least {} milliseconds: the claim, a root check, the consume and a \
+             signing attempt must fit",
+            MIN_REQUEST_DEADLINE.as_millis()
+        ));
+    }
+    Ok(deadline)
+}
+
+fn verify_concurrency(value: &str) -> Result<NonZeroUsize, String> {
+    value
+        .parse()
+        .ok()
+        .filter(|workers| *workers <= MAX_VERIFY_CONCURRENCY)
+        .ok_or_else(|| format!("expected 1 to {MAX_VERIFY_CONCURRENCY} workers"))
+}
+
 fn millis(value: &str) -> Result<Duration, String> {
     nonzero_duration(value, Duration::from_millis, "milliseconds")
 }
@@ -310,6 +390,14 @@ mod tests {
             redis_url,
             "--audience-policy-path",
             "policy.json",
+            "--root-source-url",
+            "https://root.example",
+            "--kms-signing-key-id",
+            "key",
+            "--use-case",
+            "stage-test",
+            "--verify-queue-depth",
+            "4",
         ];
         args.extend_from_slice(extra);
         args
@@ -365,23 +453,37 @@ mod tests {
         let config = parse_serve(&serve_args("rediss://cache", &[])).unwrap();
         assert_eq!(config.challenge_ttl, Duration::from_mins(2));
         assert_eq!(config.request_deadline, Duration::from_millis(5000));
+        assert_eq!(config.root_failure_window, Duration::from_secs(30));
+        assert_eq!(config.kms_failure_threshold, DEFAULT_FAILURE_THRESHOLD);
         let config = parse_serve(&serve_args(
             "rediss://cache",
-            &["--challenge-ttl-secs", "30", "--request-deadline-ms", "750"],
+            &[
+                "--challenge-ttl-secs",
+                "30",
+                "--request-deadline-ms",
+                "3500",
+            ],
         ))
         .unwrap();
         assert_eq!(config.challenge_ttl, Duration::from_secs(30));
-        assert_eq!(config.request_deadline, Duration::from_millis(750));
-        for flag in ["--challenge-ttl-secs", "--request-deadline-ms"] {
+        assert_eq!(config.request_deadline, Duration::from_millis(3500));
+        for flag in [
+            "--challenge-ttl-secs",
+            "--request-deadline-ms",
+            "--root-failure-window-secs",
+            "--kms-failure-threshold",
+            "--verify-concurrency",
+        ] {
             assert!(parse_serve(&serve_args("rediss://cache", &[flag, "0"])).is_err());
         }
-        assert!(
-            parse_serve(&serve_args(
-                "rediss://cache",
-                &["--challenge-ttl-secs", "601"]
-            ))
-            .is_err()
-        );
+        for (flag, value) in [
+            ("--challenge-ttl-secs", "601"),
+            ("--request-deadline-ms", "3499"),
+            ("--verify-concurrency", "513"),
+        ] {
+            let args = serve_args("rediss://cache", &[flag, value]);
+            assert!(parse_serve(&args).is_err(), "{flag} {value}");
+        }
     }
 
     #[test]
