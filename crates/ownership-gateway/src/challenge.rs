@@ -1,12 +1,30 @@
-//! Challenges: their identifiers and the binding stored for each one.
+//! Challenges: their identifiers, the binding stored for each one, and the endpoint that
+//! issues them.
 
-use std::{fmt, str::FromStr};
+use std::{
+    fmt,
+    str::FromStr,
+    time::{Duration, SystemTime},
+};
 
+use axum::{Json, extract::State, http::HeaderMap};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use chrono::{DateTime, Utc};
 use ownership_token::Audience;
 use rand::{RngCore as _, rngs::OsRng};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
-use world_id_primitives::FieldElement;
+use url::Url;
+use world_id_primitives::{FieldElement, poseidon::ds};
+
+use crate::{
+    cors,
+    error::{ApiError, ApiJson},
+    policy::audience_context,
+    retry::Deadline,
+    state::AppState,
+    store::{ChallengeStore, Insertion},
+    telemetry::{Dependency, ErrorChain},
+};
 
 const CHALLENGE_ID_BYTES: usize = 32;
 
@@ -95,6 +113,90 @@ pub struct Challenge {
     pub context: FieldElement,
     /// The random proof nonce.
     pub nonce: FieldElement,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ChallengeRequest {
+    aud: Audience,
+}
+
+#[derive(Serialize)]
+pub(crate) struct ChallengeResponse {
+    challenge_id: ChallengeId,
+    nonce: FieldElement,
+    context: FieldElement,
+    domain_separator: FieldElement,
+    token_url: Url,
+    expires_at: DateTime<Utc>,
+}
+
+/// Issues a challenge for an enabled audience: `POST /v1/challenges`.
+pub(crate) async fn post_challenge(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<ChallengeRequest>,
+) -> Result<Json<ChallengeResponse>, ApiError> {
+    let deadline = Deadline::after(state.request_deadline);
+    let policy = state
+        .policies
+        .enabled_policy(&request.aud)
+        .ok_or(ApiError::AudienceNotAllowed)?;
+    cors::check_origin(policy, &headers)?;
+    let issued_at = SystemTime::now();
+    let challenge = Challenge {
+        context: audience_context(&request.aud),
+        nonce: FieldElement::random(&mut OsRng),
+        aud: request.aud,
+    };
+    let challenge_id = insert_challenge(
+        state.store.as_ref(),
+        &challenge,
+        state.challenge_ttl,
+        deadline,
+    )
+    .await?;
+    metrics::counter!("ownership_gateway.challenges.issued", "aud" => challenge.aud.to_string())
+        .increment(1);
+    Ok(Json(ChallengeResponse {
+        challenge_id,
+        nonce: challenge.nonce,
+        context: challenge.context,
+        domain_separator: ds::OWNERSHIP_PROOF.as_field_element(),
+        token_url: state.token_url.clone(),
+        expires_at: (issued_at + state.challenge_ttl).into(),
+    }))
+}
+
+/// Stores the challenge under a fresh identifier, and under a second one if the first is in use.
+async fn insert_challenge(
+    store: &dyn ChallengeStore,
+    challenge: &Challenge,
+    ttl: Duration,
+    deadline: Deadline,
+) -> Result<ChallengeId, ApiError> {
+    for _ in 0..2 {
+        let id = ChallengeId::generate();
+        match store.insert(&id, challenge, ttl, deadline).await {
+            Ok(Insertion::Stored) => return Ok(id),
+            Ok(Insertion::IdInUse) => {}
+            Err(error) => {
+                tracing::warn!(
+                    dependency = Dependency::Redis.as_str(),
+                    operation = "insert_challenge",
+                    error = %ErrorChain(&error),
+                    "challenge storage failed"
+                );
+                return Err(ApiError::Unavailable);
+            }
+        }
+    }
+    tracing::error!(
+        dependency = Dependency::Redis.as_str(),
+        operation = "insert_challenge",
+        "two fresh challenge identifiers were both in use"
+    );
+    Err(ApiError::Unavailable)
 }
 
 #[cfg(test)]

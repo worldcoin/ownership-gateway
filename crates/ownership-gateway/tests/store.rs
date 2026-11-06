@@ -13,10 +13,16 @@ use std::{
 use ownership_gateway::{
     challenge::{Challenge, ChallengeId},
     retry::Deadline,
-    store::{Attempt, ChallengeStore, Insertion, StoreError},
+    store::{Attempt, ChallengeStore, Insertion, RedisStore, StoreError},
 };
-use support::{TestRedis, install_crypto_provider, plaintext_store, redis_image};
-use testcontainers::{ImageExt as _, core::IntoContainerPort as _, runners::AsyncRunner as _};
+use support::{
+    REDIS_IMAGE, REDIS_TAG, TestRedis, install_crypto_provider, plaintext_store, redis_image,
+};
+use testcontainers::{
+    GenericImage, ImageExt as _,
+    core::{IntoContainerPort as _, WaitFor},
+    runners::AsyncRunner as _,
+};
 use world_id_primitives::FieldElement;
 
 const TTL: Duration = Duration::from_mins(2);
@@ -43,6 +49,58 @@ async fn insert(store: &impl ChallengeStore) -> ChallengeId {
         Insertion::Stored
     );
     id
+}
+
+#[tokio::test]
+async fn challenges_round_trip_over_tls() {
+    install_crypto_provider();
+    let container = GenericImage::new(REDIS_IMAGE, REDIS_TAG)
+        .with_exposed_port(6379.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("Ready to accept connections"))
+        .with_copy_to(
+            "/cert.pem",
+            include_bytes!("fixtures/redis-tls/cert.pem").to_vec(),
+        )
+        .with_copy_to(
+            "/key.pem",
+            include_bytes!("fixtures/redis-tls/key.pem").to_vec(),
+        )
+        .with_cmd([
+            "redis-server",
+            "--port",
+            "0",
+            "--tls-port",
+            "6379",
+            "--tls-cert-file",
+            "/cert.pem",
+            "--tls-key-file",
+            "/key.pem",
+            "--tls-auth-clients",
+            "no",
+        ])
+        .start()
+        .await
+        .unwrap();
+    let port = container.get_host_port_ipv4(6379).await.unwrap();
+    let client = redis::Client::build_with_tls(
+        format!("rediss://127.0.0.1:{port}"),
+        redis::TlsCertificates {
+            client_tls: None,
+            root_cert: Some(include_bytes!("fixtures/redis-tls/ca.pem").to_vec()),
+        },
+    )
+    .unwrap();
+    let store = RedisStore::from_client(client).unwrap();
+    store.check_writable().await.unwrap();
+    let id = insert(&store).await;
+    assert_eq!(
+        store.claim_attempt(&id, deadline()).await.unwrap(),
+        Attempt::Claimed(challenge())
+    );
+    assert_eq!(
+        store.consume(&id, deadline()).await.unwrap(),
+        Some(challenge())
+    );
 }
 
 #[tokio::test]
