@@ -9,6 +9,7 @@ use tokio::time::Instant;
 pub(crate) enum Dependency {
     Redis,
     Root,
+    Kms,
 }
 
 impl Dependency {
@@ -16,6 +17,7 @@ impl Dependency {
         match self {
             Self::Redis => "redis",
             Self::Root => "root",
+            Self::Kms => "kms",
         }
     }
 }
@@ -26,6 +28,7 @@ pub(crate) enum FailureClass {
     Timeout,
     Server,
     Connect,
+    Throttled,
     Other,
 }
 
@@ -35,6 +38,7 @@ impl FailureClass {
             Self::Timeout => "timeout",
             Self::Server => "5xx",
             Self::Connect => "connect",
+            Self::Throttled => "throttled",
             Self::Other => "other",
         }
     }
