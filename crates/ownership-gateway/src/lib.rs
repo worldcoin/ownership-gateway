@@ -18,5 +18,5 @@ pub mod shutdown;
 pub mod signing;
 pub mod state;
 pub mod store;
-mod telemetry;
+pub mod telemetry;
 pub mod verification;

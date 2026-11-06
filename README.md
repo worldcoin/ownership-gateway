@@ -82,6 +82,10 @@ Both subcommands log, trace and send metrics as configured by the `TELEMETRY_*` 
 | `TELEMETRY_PRESET` | `datadog`, with `TELEMETRY_SERVICE_NAME`, for JSON logs and traces to the agent. |
 | `TELEMETRY_METRICS_BACKEND` | `statsd`. |
 | `TELEMETRY_STATSD_HOST`, `TELEMETRY_STATSD_PORT` | The agent's DogStatsD address, usually the node IP (`fieldRef: status.hostIP`) and `8125`. `TELEMETRY_STATSD_PREFIX` is optional. |
+| `DD_SERVICE`, `DD_ENV`, `DD_VERSION` | Datadog unified service tagging; the `common-app` chart sets them. |
+| `DD_ENTITY_ID` | The pod UID, from the downward API: `valueFrom: {fieldRef: {fieldPath: metadata.uid}}`. |
+
+With `TELEMETRY_METRICS_BACKEND=statsd`, the gateway installs the StatsD recorder itself instead of the `telemetry-batteries` one, so that every metric carries `service`, `env` and `version` from the `DD_*` variables and `dd.internal.entity_id` from `DD_ENTITY_ID`. The entity ID is Datadog's origin detection for UDP: the agent adds the pod's tags (`kube_namespace`, `pod_name`, `kube_deployment`, …) to each metric. Without it, metrics carry host tags only, and gauges from two pods on one node overwrite each other. An unset or empty variable adds no tag; a value with whitespace, `,` or `|` stops startup.
 
 | Metric | Type | Tags | Meaning |
 | --- | --- | --- | --- |

@@ -4925,6 +4925,7 @@ dependencies = [
  "clap",
  "eyre",
  "metrics",
+ "metrics-exporter-statsd",
  "metrics-util",
  "ownership-token",
  "p256 0.13.2",

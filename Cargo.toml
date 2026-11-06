@@ -24,6 +24,7 @@ clap = { version = "4", features = ["derive", "env"] }
 eddsa-babyjubjub = { package = "taceo-eddsa-babyjubjub", version = "0.6" }
 eyre = "0.6"
 metrics = "0.24"
+metrics-exporter-statsd = "0.9"
 metrics-util = { version = "0.20", default-features = false, features = ["debugging"] }
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 rand = "0.8"
