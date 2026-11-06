@@ -36,6 +36,7 @@ world-id-proof.workspace = true
 
 [dev-dependencies]
 eddsa-babyjubjub.workspace = true
+metrics-util.workspace = true
 ownership-token = { path = "../ownership-token", features = ["test-util"] }
 testcontainers.workspace = true
 testcontainers-modules = { workspace = true, features = ["localstack", "redis"] }

@@ -15,7 +15,7 @@ use std::{
 
 use axum::{
     Json,
-    extract::{FromRequest as _, Request, State},
+    extract::{Extension, FromRequest as _, Request, State},
     http::HeaderMap,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -180,10 +180,13 @@ impl Rejection {
 /// bounds the proofs buffered as well as the verifications running.
 pub(crate) async fn post_token(
     State(state): State<AppState>,
+    Extension(deadline): Extension<Deadline>,
     headers: HeaderMap,
     request: Request,
 ) -> Result<Json<TokenResponse>, ApiError> {
-    let deadline = Deadline::after(state.request_deadline);
+    if !state.issuance_enabled {
+        return Err(ApiError::Unavailable);
+    }
     let exchange = &state.exchange;
     if cors::check_any_origin(&state.policies, &headers).is_err() {
         return Err(Rejection::OriginNotAllowed.record(None));
