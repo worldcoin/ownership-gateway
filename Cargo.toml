@@ -13,6 +13,8 @@ homepage = "https://github.com/worldcoin/ownership-gateway"
 repository = "https://github.com/worldcoin/ownership-gateway"
 
 [workspace.dependencies]
+axum = "0.8"
+tower = { version = "0.5", features = ["util"] }
 base64 = "0.22"
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 serde = { version = "1", features = ["derive"] }
