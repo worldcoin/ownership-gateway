@@ -6,7 +6,7 @@ use ownership_token::{
 };
 use std::{
     net::SocketAddr,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle};
 
@@ -26,6 +26,32 @@ impl TestProxy {
         upstream: SocketAddr,
         jwks_server: &wiremock::MockServer,
         unprotected_paths: &[&str],
+    ) -> Self {
+        Self::start_with_grace(upstream, jwks_server, unprotected_paths, None).await
+    }
+
+    pub(crate) async fn start_with_grace(
+        upstream: SocketAddr,
+        jwks_server: &wiremock::MockServer,
+        unprotected_paths: &[&str],
+        shutdown_grace: Option<Duration>,
+    ) -> Self {
+        Self::start_with_options(
+            upstream,
+            jwks_server,
+            unprotected_paths,
+            shutdown_grace,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn start_with_options(
+        upstream: SocketAddr,
+        jwks_server: &wiremock::MockServer,
+        unprotected_paths: &[&str],
+        shutdown_grace: Option<Duration>,
+        timeouts: Option<(Duration, Duration)>,
     ) -> Self {
         let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let admin = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -50,6 +76,13 @@ impl TestProxy {
             .map(|path| path.parse().unwrap())
             .collect();
         config.max_connections = 10.try_into().unwrap();
+        if let Some(grace) = shutdown_grace {
+            config.shutdown_grace = grace;
+        }
+        if let Some((body, response)) = timeouts {
+            config.body_read_timeout = body;
+            config.upstream_response_timeout = response;
+        }
         let jwks = RemoteJwks::new(config.jwks_url.clone()).unwrap();
         let (stop, stopped) = oneshot::channel();
         let task = tokio::spawn(async move {
@@ -84,4 +117,46 @@ pub(crate) fn token(issuer: &TestIssuer) -> String {
 
 pub(crate) async fn status(url: String) -> u16 {
     reqwest::get(url).await.unwrap().status().as_u16()
+}
+
+pub(crate) async fn jwks(issuer: &TestIssuer) -> wiremock::MockServer {
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(issuer.jwks()))
+        .mount(&server)
+        .await;
+    server
+}
+
+pub(crate) async fn draining_upstream() -> (SocketAddr, oneshot::Receiver<()>, JoinHandle<()>) {
+    use tokio::io::AsyncReadExt;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (entered, waiting) = oneshot::channel();
+    let task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut bytes = [0; 4096];
+        assert!(socket.read(&mut bytes).await.unwrap() > 0);
+        entered.send(()).unwrap();
+        while socket.read(&mut bytes).await.unwrap_or(0) != 0 {}
+    });
+    (address, waiting, task)
+}
+
+pub(crate) async fn partial_upload(proxy: &TestProxy, length: usize) -> tokio::net::TcpStream {
+    use tokio::io::AsyncWriteExt;
+    let mut client = tokio::net::TcpStream::connect(proxy.base.trim_start_matches("http://"))
+        .await
+        .unwrap();
+    client
+        .write_all(
+            format!(
+                "POST /public HTTP/1.1\r\nHost: example\r\nContent-Length: {length}\r\n\r\npartial"
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    client
 }

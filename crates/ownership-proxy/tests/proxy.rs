@@ -1,9 +1,10 @@
 //! End-to-end sidecar forwarding and health probes.
+#[allow(dead_code)]
 mod support;
 
 use axum::{Router, extract::Request, routing::any};
 use ownership_token::test_util::TestIssuer;
-use support::{TestProxy, spawn_upstream, status, token};
+use support::{TestProxy, jwks, spawn_upstream, status, token};
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
 
 async fn echo(request: Request) -> axum::Json<serde_json::Value> {
@@ -19,15 +20,6 @@ async fn echo(request: Request) -> axum::Json<serde_json::Value> {
         "authorization": headers.get("authorization").and_then(|v| v.to_str().ok()),
         "request_id": headers.get("x-request-id").and_then(|v| v.to_str().ok()),
     }))
-}
-
-async fn jwks(issuer: &TestIssuer) -> MockServer {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(issuer.jwks()))
-        .mount(&server)
-        .await;
-    server
 }
 
 #[tokio::test]
