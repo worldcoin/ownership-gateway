@@ -15,7 +15,9 @@ eyre.workspace = true
 metrics.workspace = true
 ownership-token = { path = "../ownership-token" }
 rand.workspace = true
+rayon.workspace = true
 redis.workspace = true
+reqwest.workspace = true
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -26,12 +28,15 @@ tokio.workspace = true
 tracing.workspace = true
 url.workspace = true
 world-id-primitives.workspace = true
+world-id-proof.workspace = true
 
 [dev-dependencies]
-reqwest.workspace = true
+eddsa-babyjubjub.workspace = true
 testcontainers.workspace = true
 testcontainers-modules = { workspace = true, features = ["redis"] }
 tokio = { workspace = true, features = ["test-util"] }
+wiremock.workspace = true
+world-id-proof = { workspace = true, features = ["embed-ownership-prover"] }
 
 [lints]
 workspace = true
