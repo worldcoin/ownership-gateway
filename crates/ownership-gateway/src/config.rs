@@ -26,9 +26,11 @@ pub struct Config {
 pub enum Command {
     /// Issue challenges and tokens.
     Serve(Box<ServeConfig>),
+    /// Serve the public keys that verify issued tokens.
+    Jwks(JwksConfig),
 }
 
-/// The listener addresses.
+/// The listener addresses, shared by both deployment roles.
 #[derive(Debug, clap::Args)]
 pub struct Listeners {
     /// Address for public requests.
@@ -132,6 +134,74 @@ where
             format!("invalid value for {argument}: {reason}\n"),
         )
         .with_cmd(command))
+    }
+}
+
+/// Configuration of the JWKS deployment.
+#[derive(Debug, clap::Args)]
+pub struct JwksConfig {
+    /// Where to listen.
+    #[command(flatten)]
+    pub listeners: Listeners,
+    /// KMS key IDs whose public keys are published, separated by commas.
+    #[arg(long, env = "OWNERSHIP_GATEWAY_KMS_PUBLISHED_KEY_IDS")]
+    pub published_key_ids: PublishedKeyIds,
+}
+
+/// A KMS key ID, alias or ARN: nonempty, without whitespace or commas.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KmsKeyId(String);
+
+/// A KMS key ID that is empty or contains whitespace or a comma.
+#[derive(Debug, thiserror::Error)]
+#[error("KMS key IDs must be nonempty, without whitespace or commas")]
+pub struct InvalidKmsKeyId;
+
+impl KmsKeyId {
+    /// Returns the key ID.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl FromStr for KmsKeyId {
+    type Err = InvalidKmsKeyId;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value.is_empty() || value.contains(|c: char| c.is_whitespace() || c == ',') {
+            return Err(InvalidKmsKeyId);
+        }
+        Ok(Self(value.to_owned()))
+    }
+}
+
+impl fmt::Display for KmsKeyId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// A nonempty, comma-separated list of KMS key IDs.
+#[derive(Clone, Debug)]
+pub struct PublishedKeyIds(Vec<KmsKeyId>);
+
+impl PublishedKeyIds {
+    /// Returns the key IDs in configured order.
+    pub fn iter(&self) -> impl Iterator<Item = &KmsKeyId> {
+        self.0.iter()
+    }
+}
+
+impl FromStr for PublishedKeyIds {
+    type Err = InvalidKmsKeyId;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        value
+            .split(',')
+            .map(str::parse)
+            .collect::<Result<_, _>>()
+            .map(Self)
     }
 }
 
@@ -246,7 +316,9 @@ mod tests {
     }
 
     fn parse_serve(args: &[&str]) -> Result<ServeConfig, clap::Error> {
-        let Command::Serve(config) = Config::try_parse_from(args)?.command;
+        let Command::Serve(config) = Config::try_parse_from(args)?.command else {
+            panic!("expected the serve command");
+        };
         Ok(*config)
     }
 
@@ -329,5 +401,28 @@ mod tests {
             config.issuer = issuer.parse().unwrap();
             assert_eq!(config.token_url().as_str(), expected);
         }
+    }
+
+    #[test]
+    fn published_key_ids_are_a_nonempty_list_without_empty_entries() {
+        let ids: PublishedKeyIds = "key-a,arn:aws:kms:us-east-1:1:key/b".parse().unwrap();
+        assert_eq!(
+            ids.iter().map(KmsKeyId::as_str).collect::<Vec<_>>(),
+            ["key-a", "arn:aws:kms:us-east-1:1:key/b"]
+        );
+        for rejected in ["", "key-a,", ",key-a", "key-a,,key-b", "key a"] {
+            assert!(rejected.parse::<PublishedKeyIds>().is_err(), "{rejected:?}");
+        }
+        let config = Config::try_parse_from([
+            "ownership-gateway",
+            "jwks",
+            "--published-key-ids",
+            "key-a,key-b",
+        ])
+        .unwrap();
+        let Command::Jwks(config) = config.command else {
+            panic!("expected the jwks command");
+        };
+        assert_eq!(config.published_key_ids.iter().count(), 2);
     }
 }

@@ -1,17 +1,24 @@
 //! The ownership gateway binary.
 
-use std::sync::Arc;
+use std::{ops::RangeInclusive, sync::Arc, time::Duration};
 
 use clap::Parser as _;
 use eyre::{WrapErr as _, eyre};
 use ownership_gateway::{
-    config::{Command, Config, ServeConfig},
+    config::{Command, Config, JwksConfig, PublishedKeyIds, ServeConfig},
+    jwks::{self, JwksState},
     policy::Policies,
+    retry::jittered,
     server::{admin_router, router},
+    signing::{AwsKms, load_jwk},
     state::AppState,
     store::RedisStore,
 };
+use ownership_token::JwkSet;
 use tokio::net::TcpListener;
+
+/// The pause between attempts of a startup step that waits for a dependency.
+const STARTUP_RETRY: RangeInclusive<Duration> = Duration::from_secs(20)..=Duration::from_secs(40);
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -21,6 +28,7 @@ async fn main() -> eyre::Result<()> {
     let _telemetry = telemetry_batteries::init().wrap_err("initializing telemetry")?;
     match Config::parse().command {
         Command::Serve(config) => serve(*config).await,
+        Command::Jwks(config) => serve_jwks(config).await,
     }
 }
 
@@ -52,4 +60,77 @@ async fn serve(config: ServeConfig) -> eyre::Result<()> {
         },
     )?;
     Ok(())
+}
+
+async fn serve_jwks(config: JwksConfig) -> eyre::Result<()> {
+    let state = JwksState::default();
+    let public = TcpListener::bind(config.listeners.public)
+        .await
+        .wrap_err("binding the public listener")?;
+    let admin = TcpListener::bind(config.listeners.admin)
+        .await
+        .wrap_err("binding the admin listener")?;
+    let load_keys = async {
+        let kms = load_kms().await;
+        let keys = retry_forever("kms", "load_public_keys", async || {
+            load_published_keys(&kms, &config.published_key_ids).await
+        })
+        .await;
+        state.publish(keys).wrap_err("publishing public keys")
+    };
+    tokio::try_join!(
+        async {
+            axum::serve(public, jwks::router(state.clone()))
+                .await
+                .wrap_err("public server failed")
+        },
+        async {
+            axum::serve(admin, jwks::admin_router(state.clone()))
+                .await
+                .wrap_err("admin server failed")
+        },
+        load_keys,
+    )?;
+    Ok(())
+}
+
+async fn load_kms() -> AwsKms {
+    AwsKms::new(
+        &aws_config::defaults(aws_config::BehaviorVersion::latest())
+            .load()
+            .await,
+    )
+}
+
+/// Loads every published key, failing if any one fails.
+async fn load_published_keys(kms: &AwsKms, ids: &PublishedKeyIds) -> eyre::Result<JwkSet> {
+    let mut keys = Vec::new();
+    for id in ids.iter() {
+        let key = load_jwk(kms, id.as_str())
+            .await
+            .wrap_err_with(|| format!("loading public key {id}"))?;
+        keys.push(key);
+    }
+    Ok(JwkSet::new(keys))
+}
+
+/// Runs a startup step until it succeeds, logging each failure and pausing 20 to 40 seconds
+/// between attempts.
+async fn retry_forever<T>(
+    dependency: &'static str,
+    operation: &'static str,
+    mut step: impl AsyncFnMut() -> eyre::Result<T>,
+) -> T {
+    loop {
+        match step().await {
+            Ok(value) => return value,
+            Err(error) => tracing::warn!(
+                dependency,
+                operation,
+                error = format!("{error:#}"),
+                "startup step failed; retrying"
+            ),
+        }
+        tokio::time::sleep(jittered(STARTUP_RETRY)).await;
+    }
 }
