@@ -10,8 +10,13 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [features]
 test-util = []
+remote-jwks = ["dep:reqwest", "dep:tokio", "dep:tracing", "dep:getrandom"]
 
 [dependencies]
 base64.workspace = true
@@ -21,10 +26,16 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 url.workspace = true
+reqwest = { workspace = true, optional = true }
+tokio = { version = "1.48", features = ["rt", "sync", "time"], optional = true }
+tracing = { workspace = true, optional = true }
+getrandom = { workspace = true, optional = true }
 
 [dev-dependencies]
 ownership-token = { path = ".", features = ["test-util"] }
-tokio.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+wiremock.workspace = true
+reqwest.workspace = true
 
 [lints]
 workspace = true
