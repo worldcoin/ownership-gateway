@@ -7,6 +7,7 @@ pub mod challenge;
 pub mod config;
 mod cors;
 pub mod error;
+pub mod exchange;
 pub mod jwks;
 pub mod policy;
 mod readiness;
