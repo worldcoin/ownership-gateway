@@ -184,10 +184,11 @@ async fn loading_a_signer_needs_its_public_key() {
 }
 
 #[tokio::test]
-async fn jwks_is_served_only_once_keys_are_published() {
+async fn jwks_is_served_only_once_keys_are_published_and_ready_drops_on_shutdown() {
     let state = JwksState::default();
     let public = TestServer::start(jwks::router(state.clone())).await;
-    let admin = TestServer::start(jwks::admin_router(state.clone())).await;
+    let (trigger, shutdown) = ownership_gateway::shutdown::channel();
+    let admin = TestServer::start(jwks::admin_router(state.clone(), shutdown)).await;
     let get = |url: String| async move { reqwest::get(url).await.unwrap() };
     assert_eq!(
         get(format!("{}/health", admin.url)).await.status(),
@@ -213,4 +214,13 @@ async fn jwks_is_served_only_once_keys_are_published() {
     assert_eq!(response.headers()["cache-control"], "public, max-age=300");
     let served: JwkSet = response.json().await.unwrap();
     assert_eq!(served.keys()[0].kid(), keys.keys()[0].kid());
+    trigger.start();
+    assert_eq!(
+        get(format!("{}/ready", admin.url)).await.status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        get(format!("{}/health", admin.url)).await.status(),
+        StatusCode::OK
+    );
 }

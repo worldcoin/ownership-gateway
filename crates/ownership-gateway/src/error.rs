@@ -27,12 +27,13 @@ pub enum ApiError {
     ProofRejected,
     /// The challenge is unknown, expired, spent or already attempted (401).
     ChallengeUnusable,
-    /// A dependency failed before anything was spent (503). The client may retry the request.
+    /// A dependency failed or the request ran out of time before anything was spent, or issuance
+    /// is disabled (503). The client may retry the request.
     Unavailable,
     /// Verification capacity is exhausted; the client may retry after one second (503).
     Overloaded,
-    /// The challenge may be spent: claiming it or a later step failed or ran out of time (503).
-    /// The client must request a new challenge.
+    /// The challenge may be spent: claiming it or a later step failed, or the token request ran
+    /// past the request deadline (503). The client must request a new challenge.
     NeedsNewChallenge,
     /// KMS throttled signing after the challenge was consumed (503). The client may request a
     /// new challenge after one second.
