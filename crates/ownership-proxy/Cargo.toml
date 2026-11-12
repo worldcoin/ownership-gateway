@@ -15,6 +15,7 @@ http.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 metrics.workspace = true
+metrics-exporter-statsd.workspace = true
 ownership-token = { path = "../ownership-token", features = ["remote-jwks", "tower"] }
 serde_json.workspace = true
 telemetry-batteries.workspace = true
